@@ -1,0 +1,6 @@
+venv
+.env
+*chats.txt
+*current_update_id.txt
+.idea
+*__pycache__*
