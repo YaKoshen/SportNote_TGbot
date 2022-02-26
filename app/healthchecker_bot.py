@@ -7,13 +7,14 @@ import aiohttp
 from app.config import Config
 from app.monitoring_resource import MonitoringResource
 from app.utils import get_logger
+from app.models import User
 
 
 class HealthcheckerBot:
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
         self.last_update_id = None
-        self.chats_ids = []
+        self.__users = []
         self.monitoring_resource = MonitoringResource(name=Config.RESOURCE_NAME, url=Config.WEBSITE_URL)
         self.session = None
 
@@ -38,16 +39,16 @@ class HealthcheckerBot:
         self.logger.debug("Last update id got: %s", self.last_update_id)
 
         # получаем список всех чатов, куда нам надо отправлять оповещения
-        self.logger.debug("Getting chats ids we send messages to")
+        self.logger.debug("Getting users we send messages to")
 
-        if not os.path.exists(Config.CHATS_LIST_FILE_NAME):
-            open(Config.CHATS_LIST_FILE_NAME, "a").close()
+        if not os.path.exists(Config.USERS_STORAGE_DIRECTORY):
+            os.mkdir(Config.USERS_STORAGE_DIRECTORY)
 
-        with open(Config.CHATS_LIST_FILE_NAME, "r") as f:
-            for chat_id in f.readlines():
-                self.chats_ids.append(int(chat_id.strip()))
+        for user_filename in os.listdir(Config.USERS_STORAGE_DIRECTORY):
+            with open(os.path.join(Config.USERS_STORAGE_DIRECTORY, user_filename), "r") as user_file:
+                self.__users.append(User.load(user_file))
 
-        self.logger.debug("Chats to send: %s", self.chats_ids)
+        self.logger.debug("Users to send: %s", self.__users)
 
         self.session = aiohttp.ClientSession()
         self.logger.debug("Session created")
@@ -60,45 +61,71 @@ class HealthcheckerBot:
         with open(Config.CURRENT_UPDATE_ID_FILE_NAME, "w") as f:
             f.write(str(update_id))
 
-    async def _add_notification_chat(self, chat_id):
-        self.chats_ids.append(chat_id)
+    async def _add_user(self, user: User):
+        self.__users.append(user)
 
-        with open(Config.CHATS_LIST_FILE_NAME, "a") as f:
-            f.write(f"{chat_id}\n")
+        if not user.exist:
+            user.save()
 
-    async def _delete_notification_chat(self, chat_id):
-        if chat_id in self.chats_ids:
-            self.chats_ids.remove(chat_id)
+        self.logger.info("User added: %s\nCurrent chats: %s", user, self.__users)
+
+    async def _delete_user(self, user):
+        if user in self.__users:
+            self.__users.remove(user)
         else:
-            self.logger.warning("Removing not existing chat id: %s", chat_id)
+            self.logger.warning("Removing not existing user from app: %s", user)
 
-        with open(Config.CHATS_LIST_FILE_NAME, "w") as f:
-            f.write("\n".join([str(_id) for _id in self.chats_ids]))
+        if user.exist:
+            user.delete()
+        else:
+            self.logger.warning("Removing not existing user from folder: %s", user)
+
+        self.logger.info("User deleted: %s\nCurrent chats: %s", user, self.__users)
 
     async def answer(self, update):
         try:
             received_msg = update["message"]
-            chat_id = received_msg["chat"]["id"]
+            user_dict = received_msg["from"]
+            user_chat_id = received_msg["chat"]["id"]
+            user = User(
+                tg_id=user_dict["id"],
+                first_name=user_dict["first_name"],
+                last_name=user_dict["last_name"],
+                username=user_dict["username"],
+                current_chat_id=user_chat_id
+            )
 
         except KeyError as e:
             self.logger.warning(f"Update {str(e)}: {update}", exc_info=True)
             return None
 
+        if user not in self.__users:
+            await self._add_user(user)
+        if not user.exist:
+            user.save()
+        else:
+            # работаем с юзером, который есть в списке
+            for existing_user in self.__users:
+                if existing_user == user:
+                    user = existing_user
+
         resp_text = None
 
-        if received_msg["text"].strip() == "/start" and chat_id not in self.chats_ids:
-            await self._add_notification_chat(chat_id)
+        if received_msg["text"].strip() == "/start":
+            user.receiving_updates = True
+            user.update()
             resp_text = "You have started to receive SportNote state notifications"
 
         if received_msg["text"].strip() == "/status":
             resp_text = f"Requested status:\n{self.monitoring_resource.create_current_state_report()}"
 
         if received_msg["text"].strip() == "/stop":
+            user.receiving_updates = False
+            user.update()
             resp_text = "You will no longer receive SportNote state notifications"
-            await self._delete_notification_chat(chat_id)
 
         if resp_text:
-            msg = json.dumps({"chat_id": chat_id, "text": resp_text})
+            msg = json.dumps({"chat_id": user.current_chat_id, "text": resp_text})
 
             async with self.session.post(
                     f"https://api.telegram.org/bot{Config.BOT_TOKEN}/sendMessage",
@@ -143,8 +170,6 @@ class HealthcheckerBot:
 
         while True:
             try:
-                self.logger.debug("Sending request to %s", self.monitoring_resource.url)
-
                 async with self.session.get(self.monitoring_resource.url) as resp:
                     self.monitoring_resource.update_status_code(resp.status)
 
@@ -164,30 +189,41 @@ class HealthcheckerBot:
             else:
                 await asyncio.sleep(Config.PING_FREQUENCY)
 
+    @property
+    def notified_users(self):
+        return [user for user in self.__users if user.receiving_updates]
+
     async def send_notifications(self):
         # ждем пока не начнем мониторить и получать апдейты от тг
         while not (self.__is_monitoring and self.__is_receiving_updates):
             await asyncio.sleep(1)
         else:
-            self.logger.info("Starting to send notifications to %s", self.chats_ids)
+            self.logger.info(
+                "Starting to send notifications to %s",
+                self.notified_users
+            )
             self.__is_sending_notifications = True
 
         while True:
             if self.__is_monitoring and self.__is_receiving_updates:
-                for chat_id in self.chats_ids:
-                    
+                for user in self.notified_users:
                     async with self.session.post(
                         f"https://api.telegram.org/bot{Config.BOT_TOKEN}/sendMessage",
                         data=json.dumps(
                             {
-                                "chat_id": chat_id,
+                                "chat_id": user.current_chat_id,
                                 "text": self.monitoring_resource.create_current_state_report()
                             }
                         ),
                         headers={"Content-Type": "application/json"}
                     ) as resp:
-                        self.logger.debug("Notifications sent to %s", self.chats_ids)
+                        self.logger.debug("Notification sent to %s", user)
             else:
                 self.__is_sending_notifications = False
 
-            await asyncio.sleep(20)
+            sleep_time = Config.WEBSITE_DOWN_SLEEP_TIME
+
+            if self.monitoring_resource.is_running:
+                sleep_time = Config.WEBSITE_UP_SLEEP_TIME
+
+            await asyncio.sleep(sleep_time)

@@ -4,3 +4,4 @@ venv
 *current_update_id.txt
 .idea
 *__pycache__*
+notified_users

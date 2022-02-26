@@ -9,10 +9,15 @@ env.read_env()
 
 class Config:
     WEBSITE_URL = env("WEBSITE_URL")
-    UPDATES_RECEIVE_FREQUENCY = env.int("UPDATES_RECEIVE_FREQUENCY", 3)
     PING_FREQUENCY = env.int("PING_FREQUENCY")  # раз в сколько секунд мы дергает сайт на доступность
+    WEBSITE_DOWN_SLEEP_TIME = env.int("WEBSITE_DOWN_SLEEP_TIME", 5)  # как часто посылаем оповещения если сайт лежит
+    WEBSITE_UP_SLEEP_TIME = env.int("WEBSITE_UP_SLEEP_TIME", 300)  # как часто посылаем оповещения если сайт работает
+
+    UPDATES_RECEIVE_FREQUENCY = env.int("UPDATES_RECEIVE_FREQUENCY", 3)  # как часто дергаем тг на апдейты
     BOT_TOKEN = env("BOT_TOKEN")
-    CHATS_LIST_FILE_NAME = env("CHATS_LIST_FILE_NAME", "chats.txt")
+
+    USERS_STORAGE_DIRECTORY = env("USERS_STORAGE_DIRECTORY")
+
     CURRENT_UPDATE_ID_FILE_NAME = env("CURRENT_UPDATE_ID_FILE_NAME", "current_update_id.txt")
     RESOURCE_NAME = env("RESOURCE_NAME")
 
