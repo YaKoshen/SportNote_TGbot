@@ -72,7 +72,7 @@ class HealthcheckerBot:
             self.logger.warning("Removing not existing chat id: %s", chat_id)
 
         with open(Config.CHATS_LIST_FILE_NAME, "w") as f:
-            f.write("\n".join(self.chats_ids))
+            f.write("\n".join([str(_id) for _id in self.chats_ids]))
 
     async def answer(self, update):
         try:
