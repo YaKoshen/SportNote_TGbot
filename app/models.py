@@ -31,9 +31,9 @@ class User:
             os.remove(self.filename)
 
     def update(self):
-        # пока работает так
-        self.delete()
-        self.save()
+        with open(self.filename, "w") as f:
+            f.write("")
+            json.dump(asdict(self), f, ensure_ascii=False, indent=4)
 
     @classmethod
     def load(cls, file):
