@@ -19,6 +19,7 @@ class HealthcheckerBot:
 
         self.__is_running = False  # работает ли бот в целом
         self.__is_receiving_updates = False  # получаем ли апдейты от тг
+        self.__is_sending_notifications = False  # отсылаем ли инфо в фоновом режиме
         self.__is_monitoring = False  # посылает ли он запросы на сайт без исключений
 
     async def start(self):
@@ -164,9 +165,15 @@ class HealthcheckerBot:
                 await asyncio.sleep(Config.PING_FREQUENCY)
 
     async def send_notifications(self):
+        # ждем пока не начнем мониторить и получать апдейты от тг
+        while not (self.__is_monitoring and self.__is_receiving_updates):
+            await asyncio.sleep(1)
+        else:
+            self.logger.info("Starting to send notifications to %s", self.chats_ids)
+            self.__is_sending_notifications = True
+
         while True:
             if self.__is_monitoring and self.__is_receiving_updates:
-                self.logger.info("Started to send notifications to %s", self.chats_ids)
                 for chat_id in self.chats_ids:
                     
                     async with self.session.post(
@@ -179,6 +186,8 @@ class HealthcheckerBot:
                         ),
                         headers={"Content-Type": "application/json"}
                     ) as resp:
-                        self.logger.debug(resp)
+                        self.logger.debug("Notifications sent to %s", self.chats_ids)
+            else:
+                self.__is_sending_notifications = False
 
             await asyncio.sleep(20)
