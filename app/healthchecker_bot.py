@@ -7,7 +7,7 @@ import aiohttp
 from app.config import Config
 from app.monitoring_resource import MonitoringResource
 from app.utils import get_logger
-from app.models import User
+from app.user_file_storing_model import User
 
 
 class HealthcheckerBot:
