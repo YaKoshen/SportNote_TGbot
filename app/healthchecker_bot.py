@@ -23,7 +23,7 @@ class HealthcheckerBot:
         self.__is_sending_notifications = False  # отсылаем ли инфо в фоновом режиме
         self.__is_monitoring = False  # посылает ли он запросы на сайт без исключений
 
-    async def start(self):
+    async def _on_start(self):
         self.logger.info("Starting...")
 
         # получаем id последнего обновления из файла
@@ -53,7 +53,31 @@ class HealthcheckerBot:
         self.session = aiohttp.ClientSession()
         self.logger.debug("Session created")
 
-        self.logger.info("Healthchecker bot started for %s", self.monitoring_resource.name)
+    async def _run(self):
+        asyncio.ensure_future(self.receive_updates())
+        asyncio.ensure_future(self.send_notifications())
+        asyncio.ensure_future(self.monitor_website())
+
+    async def shutdown(self):
+        await self.session.close()
+
+    async def start(self):
+        await self._on_start()
+
+        while not self.__is_running:
+            try:
+                await self._run()
+
+            except aiohttp.client_exceptions.ClientConnectorError:
+                self.logger.exception("Error connecting to telegram services", exc_info=True)
+
+                await asyncio.sleep(Config.RECONNECT_TO_TG_SLEEP_TIME)
+                await self.shutdown()
+
+            else:
+                self.__is_running = True
+
+                self.logger.info("Healthchecker bot started for %s", self.monitoring_resource.name)
 
     async def _actualize_last_update_id(self, update_id: int):
         self.last_update_id = update_id

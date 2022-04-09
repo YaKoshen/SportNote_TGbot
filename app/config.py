@@ -15,6 +15,7 @@ class Config:
 
     UPDATES_RECEIVE_FREQUENCY = env.int("UPDATES_RECEIVE_FREQUENCY", 3)  # как часто дергаем тг на апдейты
     BOT_TOKEN = env("BOT_TOKEN")
+    RECONNECT_TO_TG_SLEEP_TIME = env.float("RECONNECT_TO_TG_SLEEP_TIME", 60)
 
     USERS_STORAGE_DIRECTORY = env("USERS_STORAGE_DIRECTORY")
 
