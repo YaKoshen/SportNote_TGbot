@@ -7,21 +7,28 @@ import aiohttp
 from app.config import Config
 from app.monitoring_resource import MonitoringResource
 from app.utils import get_logger
-from app.user_file_storing_model import User
+from app.models import db, UserModel
 
 
 class HealthcheckerBot:
     def __init__(self):
         self.logger = get_logger(self.__class__.__name__)
         self.last_update_id = None
-        self.__users = []
         self.monitoring_resource = MonitoringResource(name=Config.RESOURCE_NAME, url=Config.WEBSITE_URL)
         self.session = None
+        self.db = db
 
         self.__is_running = False  # работает ли бот в целом
         self.__is_receiving_updates = False  # получаем ли апдейты от тг
         self.__is_sending_notifications = False  # отсылаем ли инфо в фоновом режиме
         self.__is_monitoring = False  # посылает ли он запросы на сайт без исключений
+
+    async def _init_db(self):
+        await self.db.set_bind(Config.DATABASE_URI)
+
+    @staticmethod
+    async def _query_notified_users():
+        return await UserModel.query.where(UserModel.receiving_updates == True).gino.all()
 
     async def _on_start(self):
         self.logger.info("Starting...")
@@ -38,20 +45,12 @@ class HealthcheckerBot:
 
         self.logger.debug("Last update id got: %s", self.last_update_id)
 
-        # получаем список всех чатов, куда нам надо отправлять оповещения
-        self.logger.debug("Getting users we send messages to")
+        await self._init_db()
 
-        if not os.path.exists(Config.USERS_STORAGE_DIRECTORY):
-            os.mkdir(Config.USERS_STORAGE_DIRECTORY)
-
-        for user_filename in os.listdir(Config.USERS_STORAGE_DIRECTORY):
-            with open(os.path.join(Config.USERS_STORAGE_DIRECTORY, user_filename), "r") as user_file:
-                self.__users.append(User.load(user_file))
-
-        self.logger.debug("Users to send: %s", self.__users)
+        self.logger.debug("Database binded")
 
         self.session = aiohttp.ClientSession()
-        self.logger.debug("Session created")
+        self.logger.debug("aiohttp.ClientSession created")
 
     async def _run(self):
         asyncio.ensure_future(self.receive_updates())
@@ -60,6 +59,7 @@ class HealthcheckerBot:
 
     async def shutdown(self):
         await self.session.close()
+        await self.db.pop_bind().close()
 
     async def start(self):
         await self._on_start()
@@ -85,33 +85,14 @@ class HealthcheckerBot:
         with open(Config.CURRENT_UPDATE_ID_FILE_NAME, "w") as f:
             f.write(str(update_id))
 
-    async def _add_user(self, user: User):
-        self.__users.append(user)
-
-        if not user.exist:
-            user.save()
-
-        self.logger.info("User added: %s\nCurrent chats: %s", user, self.__users)
-
-    async def _delete_user(self, user):
-        if user in self.__users:
-            self.__users.remove(user)
-        else:
-            self.logger.warning("Removing not existing user from app: %s", user)
-
-        if user.exist:
-            user.delete()
-        else:
-            self.logger.warning("Removing not existing user from folder: %s", user)
-
-        self.logger.info("User deleted: %s\nCurrent chats: %s", user, self.__users)
-
     async def answer(self, update):
+        # парсим апдейт
         try:
             received_msg = update["message"]
             user_dict = received_msg["from"]
             user_chat_id = received_msg["chat"]["id"]
-            user = User(
+
+            user_who_wrote = UserModel(
                 tg_id=user_dict["id"],
                 first_name=user_dict["first_name"],
                 last_name=user_dict["last_name"],
@@ -123,29 +104,25 @@ class HealthcheckerBot:
             self.logger.warning(f"Update {str(e)}: {update}", exc_info=True)
             return None
 
-        if user not in self.__users:
-            await self._add_user(user)
-        if not user.exist:
-            user.save()
-        else:
-            # работаем с юзером, который есть в списке
-            for existing_user in self.__users:
-                if existing_user == user:
-                    user = existing_user
+        # Вытаскиваем/создаем юзера в базе
+        user = await UserModel.query.where(UserModel.tg_id == user_who_wrote.tg_id).gino.first()
 
+        if not user:
+            user = user_who_wrote
+            await user.create()
+
+        # Решаем, что ответить юзеру (отвечаем только на команды)
         resp_text = None
 
         if received_msg["text"].strip() == "/start":
-            user.receiving_updates = True
-            user.update()
+            await user.update(receiving_updates=True).apply()
             resp_text = "You have started to receive SportNote state notifications"
 
         if received_msg["text"].strip() == "/status":
             resp_text = f"Requested status:\n{self.monitoring_resource.create_current_state_report()}"
 
         if received_msg["text"].strip() == "/stop":
-            user.receiving_updates = False
-            user.update()
+            await user.update(receiving_updates=False).apply()
             resp_text = "You will no longer receive SportNote state notifications"
 
         if resp_text:
@@ -167,7 +144,7 @@ class HealthcheckerBot:
 
         while True:
             async with self.session.get(
-                f"https://api.telegram.org/bot{Config.BOT_TOKEN}/getUpdates?offset={self.last_update_id + 1}"
+                    f"https://api.telegram.org/bot{Config.BOT_TOKEN}/getUpdates?offset={self.last_update_id + 1}"
             ) as resp:
                 resp_json = await resp.json()
 
@@ -213,33 +190,31 @@ class HealthcheckerBot:
             else:
                 await asyncio.sleep(Config.PING_FREQUENCY)
 
-    @property
-    def notified_users(self):
-        return [user for user in self.__users if user.receiving_updates]
-
     async def send_notifications(self):
         # ждем пока не начнем мониторить и получать апдейты от тг
         while not (self.__is_monitoring and self.__is_receiving_updates):
             await asyncio.sleep(1)
+
         else:
-            self.logger.info(
-                "Starting to send notifications to %s",
-                self.notified_users
-            )
+            self.logger.info("Starting to send notifications")
+
             self.__is_sending_notifications = True
 
         while True:
             if self.__is_monitoring and self.__is_receiving_updates:
-                for user in self.notified_users:
+
+                notified_users = await self._query_notified_users()
+
+                for user in notified_users:
                     async with self.session.post(
-                        f"https://api.telegram.org/bot{Config.BOT_TOKEN}/sendMessage",
-                        data=json.dumps(
-                            {
-                                "chat_id": user.current_chat_id,
-                                "text": self.monitoring_resource.create_current_state_report()
-                            }
-                        ),
-                        headers={"Content-Type": "application/json"}
+                            f"https://api.telegram.org/bot{Config.BOT_TOKEN}/sendMessage",
+                            data=json.dumps(
+                                {
+                                    "chat_id": user.current_chat_id,
+                                    "text": self.monitoring_resource.create_current_state_report()
+                                }
+                            ),
+                            headers={"Content-Type": "application/json"}
                     ) as resp:
                         self.logger.debug("Notification sent to %s", user)
             else:

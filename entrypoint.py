@@ -14,4 +14,5 @@ if __name__ == "__main__":
         loop.run_forever()
 
     except KeyboardInterrupt:
-        print("Stopped")
+        print("Keyboard interrupted")
+        loop.run_until_complete(bot.shutdown())

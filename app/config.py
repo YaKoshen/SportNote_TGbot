@@ -17,6 +17,15 @@ class Config:
     BOT_TOKEN = env("BOT_TOKEN")
     RECONNECT_TO_TG_SLEEP_TIME = env.float("RECONNECT_TO_TG_SLEEP_TIME", 60)
 
+    with env.prefixed('DATABASE_'):
+        DATABASE_URI = env('URI', '') or 'postgres://{user}:{password}@{host}:{port}/{database}'.format(
+            user=env('USER'),
+            password=env('PASSWORD'),
+            host=env('HOST'),
+            port=env('PORT', 5432),
+            database=env('NAME'),
+        )
+
     USERS_STORAGE_DIRECTORY = env("USERS_STORAGE_DIRECTORY")
 
     CURRENT_UPDATE_ID_FILE_NAME = env("CURRENT_UPDATE_ID_FILE_NAME", "current_update_id.txt")
